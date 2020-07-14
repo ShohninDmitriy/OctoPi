@@ -11,6 +11,15 @@ export LC_ALL=C
 
 source /common.sh
 
+if [ -n "$OCTOPI_APTMIRROR" ]; 
+then
+    echo "Switching apt mirror in /etc/apt/sources.list to $OCTOPI_APTMIRROR"
+    cp /etc/apt/sources.list /etc/apt/sources.list.backup
+    sed -i "s@http://raspbian.raspberrypi.org/raspbian/@$OCTOPI_APTMIRROR@g" /etc/apt/sources.list
+fi
+
+WEBCAM_USER=webcam
+
 ### Script ####
 
 unpack /filesystem/home/pi /home/pi pi
@@ -24,22 +33,16 @@ echo "removing:" $remove_extra
 apt-get remove -y --purge  $remove_extra
 apt-get autoremove -y
 
-apt-get -y --force-yes install python2.7 python-virtualenv python-dev git screen subversion cmake checkinstall avahi-daemon libavahi-compat-libdnssd1 libffi-dev libssl-dev
+apt-get -y --force-yes install python3 python3-virtualenv python3-dev git screen subversion cmake checkinstall avahi-daemon libavahi-compat-libdnssd1 libffi-dev libssl-dev
 
 echo " - Reinstall iputils-ping"
 apt-get install --reinstall iputils-ping
 
-
 pushd /home/pi
 
   # build virtualenv
-  # uncomment when setup tools issue has been fixed
-  # sudo -u pi virtualenv oprint
-  # sudo -u pi /home/pi/oprint/bin/pip install --upgrade pip
-
-  sudo -u pi virtualenv --no-setuptools oprint
+  sudo -u pi python3 -m virtualenv --python=python3 oprint
   sudo -u pi /home/pi/oprint/bin/pip install --upgrade pip
-  sudo -u pi /home/pi/oprint/bin/pip install "setuptools<45"
 
   # OctoPrint & pyserial
   if [ "$OCTOPI_INCLUDE_OCTOPRINT" == "yes" ]
@@ -98,6 +101,14 @@ pushd /home/pi
 EOT
       popd
     popd
+  fi
+
+  # FFMPEG HLS
+  if [ "$OCTOPI_INCLUDE_FFMPEG_HLS" == "yes" ]
+  then
+    apt-get install -y --force-yes --no-install-recommends ffmpeg nginx
+    useradd ${WEBCAM_USER}
+    usermod -aG video ${WEBCAM_USER}
   fi
   
   #CuraEngine
@@ -205,11 +216,10 @@ update-rc.d change_hostname defaults
 
 if [ "$OCTOPI_INCLUDE_OCTOPRINT" == "yes" ]
 then
-  update-rc.d octoprint defaults 95
+  systemctl_if_exists enable octoprint.service
 else
   # let's remove the configs for system services we don't need
-  rm /etc/init.d/octoprint
-  rm /etc/default/octoprint
+  rm /etc/systemd/system/octoprint.service
 fi
 
 ### haproxy
@@ -223,7 +233,7 @@ else
 
   # also we need to make OctoPrint bind to all interfaces because otherwise
   # it will be unaccessible...
-  [ -f /etc/default/octoprint ] && sed -i "s@HOST=127.0.0.1@HOST=0.0.0.0@" /etc/default/octoprint 
+  [ -f /etc/systemd/system/octoprint.service ] && sed -i "s@HOST=127.0.0.1@HOST=0.0.0.0@" /etc/systemd/system/octoprint.service
 fi
 
 ### CuraEngine
@@ -234,6 +244,10 @@ then
   sudo -u pi sed -i -e "s@cura_engine: /usr/local/bin/cura_engine@cura_engine:@g" /home/pi/.octoprint/config.yaml
 fi
 
+### Streamer select service.
+
+systemctl_if_exists enable streamer_select.service
+
 ### mjpg_streamer
 
 if [ "$OCTOPI_INCLUDE_MJPGSTREAMER" == "yes" ]
@@ -241,12 +255,20 @@ then
   systemctl_if_exists enable webcamd.service
 else
   rm /etc/logrotate.d/webcamd
-  rm /etc/init.d/webcamd
-  rm /etc/default/webcamd
+  rm /etc/systemd/system/webcamd.service
   rm /root/bin/webcamd
 fi
+
+### HLS streamer
+
+systemctl_if_exists enable ffmpeg_hls.service
 
 #cleanup
 apt-get clean
 apt-get autoremove -y
 
+if [ -n "$OCTOPI_APTMIRROR" ]; 
+then
+    echo "Reverting /etc/apt/sources.list"
+    mv /etc/apt/sources.list.backup /etc/apt/sources.list
+fi
